@@ -17,6 +17,7 @@ public sealed class HookManager
     private readonly Keyboard _keyboardHook;
     private readonly ExplorerWatcher _windowHook;
     private readonly SynchronizationContext _syncContext;
+    private int _disposeState;
     public event Action? OnVisibilityToggled;
     public event Action? OnWindowHookToggled;
     public event Action? OnReuseTabsToggled;
@@ -48,6 +49,8 @@ public sealed class HookManager
 
     private async void OnHotKeyProfileTriggered(HotKeyEventArgs e)
     {
+        if (Volatile.Read(ref _disposeState) != 0) return;
+
         switch (e.Profile.Action)
         {
             case HotKeyAction.Open:
@@ -197,8 +200,13 @@ public sealed class HookManager
             hook.StopHook();
     }
 
+    /// <summary>
+    /// Stops and releases all hooks once, including when multiple application shutdown events fire.
+    /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
+
         _keyboardHook.Dispose();
         _mouseHook.Dispose();
         _windowHook.Dispose();

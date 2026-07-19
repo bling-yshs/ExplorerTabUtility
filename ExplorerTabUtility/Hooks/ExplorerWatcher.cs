@@ -36,6 +36,7 @@ public class ExplorerWatcher : IHook
     private readonly SemaphoreSlim _toOpenWindowsLock = new(1);
     private readonly ProcessWatcher _processWatcher;
     private int _mainExplorerProcessId;
+    private int _disposeState;
     private Timer? _explorerCheckTimer;
 
     private nint _eventObjectShowHookId;
@@ -824,17 +825,31 @@ public class ExplorerWatcher : IHook
         return Task.Factory.StartNew(action, ct, tco, _staTaskScheduler);
     }
     
-    private void StartExplorerProcessCheck() => _explorerCheckTimer = new Timer(CheckForMainExplorer, null, 0, 1000);
+    /// <summary>
+    /// Starts polling for the main Explorer process unless shutdown has begun.
+    /// </summary>
+    private void StartExplorerProcessCheck()
+    {
+        if (Volatile.Read(ref _disposeState) != 0) return;
+
+        _explorerCheckTimer = new Timer(CheckForMainExplorer, null, 0, 1000);
+
+        if (Volatile.Read(ref _disposeState) != 0)
+            Interlocked.Exchange(ref _explorerCheckTimer, null)?.Dispose();
+    }
+
     private void CheckForMainExplorer(object? state)
     {
+        if (Volatile.Read(ref _disposeState) != 0) return;
+
         var process = Helper.GetMainExplorerProcess();
         if (process == null) return;
         
-        _explorerCheckTimer?.Dispose();
-        _explorerCheckTimer = null;
+        Interlocked.Exchange(ref _explorerCheckTimer, null)?.Dispose();
         
         lock (_processLock)
         {
+            if (Volatile.Read(ref _disposeState) != 0) return;
             if (_mainExplorerProcessId != 0) return;
             
             _mainExplorerProcessId = process.Id;
@@ -844,9 +859,12 @@ public class ExplorerWatcher : IHook
     }
     private void OnExplorerProcessTerminated(object? s, ProcessEventArgs e)
     {
+        if (Volatile.Read(ref _disposeState) != 0) return;
+
         // Main explorer.exe process (_shellWindows must be restarted)
         lock (_processLock)
         {
+            if (Volatile.Read(ref _disposeState) != 0) return;
             if (e.ProcessId == _mainExplorerProcessId)
             {
                 _mainExplorerProcessId = 0;
@@ -992,11 +1010,27 @@ public class ExplorerWatcher : IHook
         SettingsManager.ClosedWindows = distinctItems.Skip(Math.Max(0, distinctItems.Length - 100)).ToArray();
     }
 
+    /// <summary>
+    /// Stops Explorer monitoring and releases initialized Shell resources once.
+    /// </summary>
     public void Dispose()
     {
-        DisposeShellObjects();
-        _instanceRunning = false;
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
+
+        Interlocked.Exchange(ref _explorerCheckTimer, null)?.Dispose();
+        _processWatcher.ProcessTerminated -= OnExplorerProcessTerminated;
         _processWatcher.Dispose();
+
+        lock (_processLock)
+        {
+            if (_mainExplorerProcessId != 0)
+            {
+                _mainExplorerProcessId = 0;
+                DisposeShellObjects();
+            }
+        }
+
+        _instanceRunning = false;
         GC.SuppressFinalize(this);
     }
 }

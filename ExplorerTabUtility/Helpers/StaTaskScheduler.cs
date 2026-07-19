@@ -11,6 +11,7 @@ public sealed class StaTaskScheduler : TaskScheduler, IDisposable
 {
     private readonly Thread _staThread;
     private readonly BlockingCollection<Task> _tasks = new();
+    private int _disposeState;
 
     public StaTaskScheduler()
     {
@@ -61,8 +62,13 @@ public sealed class StaTaskScheduler : TaskScheduler, IDisposable
         return _tasks.ToArray();
     }
 
+    /// <summary>
+    /// Stops accepting work, waits for the STA thread to finish, and releases the task queue.
+    /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0) return;
+
         _tasks.CompleteAdding();
         _staThread.Join();
         _tasks.Dispose();
