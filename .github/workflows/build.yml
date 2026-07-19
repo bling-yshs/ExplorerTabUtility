@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_NAME: ExplorerTabUtility
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: true
+      max-parallel: 6
+      matrix:
+        framework: [ 'net9.0-windows', 'net481' ]
+        arch: [ 'x64', 'x86', 'arm64' ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild Environments
+        uses: microsoft/setup-msbuild@v2
+        with:
+          vs-version: '17.0'
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build Project
+        shell: pwsh
+        run: |
+          $outputDir = "../publish/${{ matrix.framework }}/${{ matrix.arch }}"
+          msbuild "${{ env.PROJECT_NAME }}/${{ env.PROJECT_NAME }}.csproj" /restore /t:Publish /p:Configuration=Release /p:TargetFramework=${{ matrix.framework }} /p:RuntimeIdentifier=win-${{ matrix.arch }} /p:PublishDir=$outputDir /p:DebugType=none
+
+      - name: Zip Artifacts
+        id: zip_artifacts
+        shell: pwsh
+        run: |
+          $frameworkName = if ("${{ matrix.framework }}" -eq "net9.0-windows") { "Net9.0_FrameworkDependent" } else { "NetFW4.8.1" }
+          $zipName = "${{ env.PROJECT_NAME }}_${{ github.run_number }}_${{ matrix.arch }}_${frameworkName}.zip"
+
+          # Create a temporary directory with PROJECT_NAME as the root
+          $tempDir = "temp-$(New-Guid)"
+          New-Item -Path "$tempDir/${{ env.PROJECT_NAME }}" -ItemType Directory -Force | Out-Null
+
+          # Copy published files into PROJECT_NAME subdirectory
+          Copy-Item -Path "publish/${{ matrix.framework }}/${{ matrix.arch }}/*" -Destination "$tempDir/${{ env.PROJECT_NAME }}" -Recurse
+
+          # Compress the entire temp directory
+          Compress-Archive -Path "$tempDir/*" -DestinationPath $zipName
+
+          # Clean up temporary directory
+          Remove-Item -Path $tempDir -Recurse -Force
+
+          "zipName=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.zip_artifacts.outputs.zipName }}
+          archive: false
